@@ -1,4 +1,4 @@
-package kyrabbitmq
+package rabbitmq
 
 import (
 	"github.com/streadway/amqp"
@@ -7,96 +7,90 @@ import (
 )
 
 type connection struct {
-	connection *amqp.Connection
-	channel    *channel
+	Connection *amqp.Connection
+	Channel    *channel
 
-	exchange     *Exchange
-	brokerConfig *Config
-	closeChan    chan struct{}
-	waitChan     chan struct{}
+	url           string
+	exchange      exchange
+	prefetchCount uint16
+	closeChan     chan struct{}
+	waitChan      chan struct{}
 
 	connected bool
 	sync.Mutex
 }
 
-type Exchange struct {
+type exchange struct {
 	Name string
 	Type string
-	Args *amqp.Table
 }
 
-func newConnection(brokerConfig *Config) *connection {
-	exchange := brokerConfig.Exchange
-
-	if exchange == nil || exchange.Name == "" {
-		exchange = &DefaultExchange
-	} else if exchange.Type == "" {
-		exchange.Type = DefaultExchange.Type
-	}
-
+func newConnection(opts Options) *connection {
 	ret := connection{
-		exchange:     exchange,
-		brokerConfig: brokerConfig,
-		closeChan:    make(chan struct{}),
-		waitChan:     make(chan struct{}),
+		url:           opts.URL,
+		exchange:      opts.Exchange,
+		prefetchCount: opts.PrefetchCount,
+		closeChan:     make(chan struct{}),
+		waitChan:      make(chan struct{}),
 	}
 
-	// 新建一个连接时 该通道要置关闭状态
 	close(ret.waitChan)
 
 	return &ret
 }
 
-func (entity *connection) Connect() error {
-	entity.Lock()
+func (conn *connection) Connect() error {
+	conn.Lock()
 
-	if entity.connected {
-		entity.Unlock()
+	if conn.connected {
+		conn.Unlock()
 		return nil
 	}
 
 	select {
-	case <-entity.closeChan:
-		// 该通道被关闭时 会进入该分支 故重建通道
-		entity.closeChan = make(chan struct{})
+	case <-conn.closeChan:
+		// closeChan 被关闭时会进入该分支 故重建通道
+		conn.closeChan = make(chan struct{})
 	default:
+		// 万事胜意
 	}
 
-	entity.Unlock()
+	conn.Unlock()
 
-	return entity.connect()
+	return conn.connect()
 }
 
-func (entity *connection) Close() error {
-	entity.Lock()
-	defer entity.Unlock()
+func (conn *connection) Close() error {
+	conn.Lock()
+	defer conn.Unlock()
 
 	select {
-	case <-entity.closeChan:
+	case <-conn.closeChan:
 		return nil
 	default:
-		close(entity.closeChan)
-		entity.connected = false
+		close(conn.closeChan)
+		conn.connected = false
 	}
 
-	return entity.connection.Close()
-}
-
-func (entity *connection) Publish(routingKey string, msg *amqp.Publishing) error {
-	return entity.channel.Publish(entity.exchange.Name, routingKey, msg)
-}
-
-func (entity *connection) Consume(queue, key string) (*channel, <-chan amqp.Delivery, error) {
-	consumerChannel, err := newChannel(entity)
+	err := conn.Channel.Close()
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 
-	if err := consumerChannel.DeclareQueue(queue); err != nil {
-		return nil, nil, err
+	return conn.Connection.Close()
+}
+
+func (conn *connection) Publish(routingKey string, msg amqp.Publishing) error {
+	if conn.Channel == nil {
+		return nullChannel
 	}
 
-	if err := consumerChannel.BindQueue(queue, key, entity.exchange.Name); err != nil {
+	return conn.Channel.Publish(conn.exchange.Name, routingKey, msg)
+}
+
+func (conn *connection) Consume(queue string) (*channel, <-chan amqp.Delivery, error) {
+	consumerChannel, err := newChannel(conn)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -108,62 +102,79 @@ func (entity *connection) Consume(queue, key string) (*channel, <-chan amqp.Deli
 	return consumerChannel, deliveries, nil
 }
 
-func (entity *connection) connect() error {
-	if err := entity.tryConnect(); err != nil {
+func (conn *connection) DeclareAndBindQueue(queue, routingKey string) error {
+	if conn.Channel == nil {
+		return nullChannel
+	}
+
+	err := conn.Channel.DeclareQueue(queue)
+	if err != nil {
 		return err
 	}
 
-	entity.Lock()
-	entity.connected = true
-	entity.Unlock()
+	return conn.Channel.BindQueue(queue, routingKey, conn.exchange.Name)
+}
 
-	go entity.keepConnect()
+func (conn *connection) connect() error {
+	err := conn.tryConnect()
+	if err != nil {
+		return err
+	}
+
+	conn.Lock()
+	conn.connected = true
+	conn.Unlock()
+
+	go conn.keepConnect()
 
 	return nil
 }
 
-func (entity *connection) tryConnect() error {
+func (conn *connection) tryConnect() error {
 	var err error
 
-	if entity.connection, err = amqp.Dial(entity.brokerConfig.GetAmqpUrl()); err != nil {
+	conn.Connection, err = amqp.Dial(conn.url)
+	if err != nil {
 		return err
 	}
 
-	if entity.channel, err = newChannel(entity); err != nil {
+	conn.Channel, err = newChannel(conn)
+	if err != nil {
 		return err
 	}
 
-	return entity.channel.DeclareExchange(entity.exchange)
+	return conn.Channel.DeclareExchange(conn.exchange)
 }
 
-func (entity *connection) keepConnect() {
-	offline := false
+func (conn *connection) keepConnect() {
+	connected := false
 
 	for {
-		if offline {
-			if err := entity.tryConnect(); err != nil {
+		if connected {
+			if err := conn.tryConnect(); err != nil {
 				time.Sleep(time.Second)
 				continue
 			}
 
-			entity.Lock()
-			entity.connected = true
-			entity.Unlock()
+			conn.Lock()
+			conn.connected = true
+			conn.Unlock()
 
-			close(entity.waitChan)
+			close(conn.waitChan)
 		}
 
+		connected = true
+
 		notifyClose := make(chan *amqp.Error)
-		entity.connection.NotifyClose(notifyClose)
+		conn.Connection.NotifyClose(notifyClose)
 
 		select {
 		case <-notifyClose:
-			offline = true
-			entity.Lock()
-			entity.connected = false
-			entity.waitChan = make(chan struct{})
-			entity.Unlock()
-		case <-entity.closeChan:
+			conn.Lock()
+			conn.connected = false
+			conn.waitChan = make(chan struct{})
+			conn.Unlock()
+		case <-conn.closeChan:
 			return
 		}
 	}

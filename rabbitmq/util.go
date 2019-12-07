@@ -1,10 +1,17 @@
-package kyrabbitmq
+package rabbitmq
 
 import (
 	"errors"
-	"fmt"
+	"github.com/streadway/amqp"
 )
 
-func WrapErr(format string, err error) error {
-	return errors.New(fmt.Sprintf("[kyRabbitMQ] %s: %s", format, err.Error()))
-}
+var (
+	DefaultAMQPURL  = "amqp://guest:guest@127.0.0.1:5672/"
+	DefaultExchange = exchange{
+		Name: "kamyee",
+		Type: amqp.ExchangeTopic,
+	}
+
+	nullChannel    = errors.New("channel is null")
+	nullConnection = errors.New("connection is null")
+)

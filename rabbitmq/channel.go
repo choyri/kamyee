@@ -1,14 +1,13 @@
-package kyrabbitmq
+package rabbitmq
 
 import (
-	"errors"
 	"github.com/google/uuid"
 	"github.com/streadway/amqp"
 )
 
 type channel struct {
-	uuid    string
-	channel *amqp.Channel
+	Channel *amqp.Channel
+	tag     string // Consumer tag
 }
 
 func newChannel(conn *connection) (*channel, error) {
@@ -18,16 +17,17 @@ func newChannel(conn *connection) (*channel, error) {
 	}
 
 	ret := channel{
-		uuid: id.String(),
+		tag: id.String(),
 	}
 
-	ret.channel, err = conn.connection.Channel()
+	ret.Channel, err = conn.Connection.Channel()
 	if err != nil {
 		return nil, err
 	}
 
-	if conn.brokerConfig.PrefetchCount != 0 {
-		if err = ret.channel.Qos(conn.brokerConfig.PrefetchCount, 0, conn.brokerConfig.PrefetchGlobal); err != nil {
+	if conn.prefetchCount > 0 {
+		err = ret.Channel.Qos(int(conn.prefetchCount), 0, true)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -35,49 +35,45 @@ func newChannel(conn *connection) (*channel, error) {
 	return &ret, nil
 }
 
-func (entity *channel) Close() error {
-	if entity.channel == nil {
-		return errors.New("channel is nil")
+func (ch *channel) Close() error {
+	if ch.Channel == nil {
+		return nullChannel
 	}
 
-	return entity.channel.Close()
+	return ch.Channel.Close()
 }
 
-func (entity *channel) Publish(exchange, routingKey string, message *amqp.Publishing) error {
-	if entity.channel == nil {
-		return errors.New("channel is nil")
-	}
-
-	return entity.channel.Publish(exchange, routingKey, false, false, *message)
+func (ch *channel) Publish(exchange, routingKey string, message amqp.Publishing) error {
+	return ch.Channel.Publish(exchange, routingKey, false, false, message)
 }
 
-func (entity *channel) Consume(queue string) (<-chan amqp.Delivery, error) {
-	return entity.channel.Consume(
-		queue,       // name
-		entity.uuid, // consumerTag,
-		false,       // noAck
-		false,       // exclusive
-		false,       // noLocal
-		false,       // noWait
-		nil,         // arguments
+func (ch *channel) Consume(queue string) (<-chan amqp.Delivery, error) {
+	return ch.Channel.Consume(
+		queue,  // Name
+		ch.tag, // consumerTag,
+		false,  // noAck
+		false,  // exclusive
+		false,  // noLocal
+		false,  // noWait
+		nil,    // arguments
 	)
 }
 
-func (entity *channel) DeclareExchange(exchange *Exchange) error {
-	return entity.channel.ExchangeDeclare(
-		exchange.Name,  // name
-		exchange.Type,  // kind
-		true,           // durable
-		false,          // autoDelete
-		false,          // internal
-		false,          // noWait
-		*exchange.Args, // args
+func (ch *channel) DeclareExchange(exchange exchange) error {
+	return ch.Channel.ExchangeDeclare(
+		exchange.Name, // name
+		exchange.Type, // kind
+		true,          // durable
+		false,         // autoDelete
+		false,         // internal
+		false,         // noWait
+		nil,           // args
 	)
 }
 
-func (entity *channel) DeclareQueue(name string) error {
-	_, err := entity.channel.QueueDeclare(
-		name,  // name of the queue
+func (ch *channel) DeclareQueue(name string) error {
+	_, err := ch.Channel.QueueDeclare(
+		name,  // Name of the queue
 		true,  // durable
 		false, // delete when unused
 		false, // exclusive
@@ -88,12 +84,12 @@ func (entity *channel) DeclareQueue(name string) error {
 	return err
 }
 
-func (entity *channel) BindQueue(queue, key, exchange string) error {
-	return entity.channel.QueueBind(
-		queue,    // name of the queue
-		key,      // bindingKey
-		exchange, // sourceExchange
-		false,    // noWait
-		nil,      // arguments
+func (ch *channel) BindQueue(queue, routingKey, exchange string) error {
+	return ch.Channel.QueueBind(
+		queue,      // Name of the queue
+		routingKey, // routingKey
+		exchange,   // sourceExchange
+		false,      // noWait
+		nil,        // arguments
 	)
 }

@@ -1,104 +1,137 @@
-package kyrabbitmq
+package rabbitmq
 
 import (
-	"errors"
-	"github.com/streadway/amqp"
+	"fmt"
 	"sync"
 	"time"
 )
 
 type Consumer struct {
-	broker   *broker
-	channel  *channel
-	shutdown bool
+	r        *rabbitmq
 	handlers []ConsumerHandler
+	channels []*channel
+	shutdown bool
+
 	sync.Mutex
 }
 
-func NewConsumer(config *Config) (*Consumer, error) {
-	broker := newBroker(config)
+func NewConsumer(opts ...Option) (*Consumer, error) {
+	r := newRabbitMQ(opts...)
 
-	if err := broker.Connect(); err != nil {
-		return nil, WrapErr("New consumer failed", err)
+	if err := r.Connect(); err != nil {
+		return nil, fmt.Errorf("new producer failed: %w", err)
 	}
 
-	return &Consumer{
-		broker: broker,
-	}, nil
+	ret := Consumer{
+		r: r,
+	}
+
+	return &ret, nil
 }
 
-func (entity *Consumer) Startup() error {
-	if entity.broker.conn == nil {
-		return WrapErr("Startup failed", errors.New("not connected"))
-	}
+func (c *Consumer) RegisterHandler(handlers []ConsumerHandler) error {
+	queueMap := make(map[string]int)
 
-	for _, handler := range entity.handlers {
-		entity.broker.wg.Add(1)
-		go entity.handle(&handler)
-	}
+	for _, v := range handlers {
+		if len(v.Queue) == 0 {
+			return fmt.Errorf("empty queue (routingKey: %s)", v.RoutingKey)
+		}
 
-	return nil
-}
+		queueMap[v.Queue]++
 
-func (entity *Consumer) Shutdown() error {
-	entity.Lock()
-	defer entity.Unlock()
-
-	entity.shutdown = true
-
-	if entity.channel != nil {
-		if err := entity.channel.Close(); err != nil {
-			return WrapErr("consumer shutdown failed", err)
+		if queueMap[v.Queue] > 1 {
+			return fmt.Errorf("duplicate queue (queue: %s)", v.Queue)
 		}
 	}
 
+	c.handlers = handlers
+
 	return nil
 }
 
-func (entity *Consumer) RegisterHandler(handlers []ConsumerHandler) *Consumer {
-	entity.handlers = handlers
-	return entity
+func (c *Consumer) Startup() error {
+	if c.r.Conn == nil {
+		return fmt.Errorf("startup failed: %w", nullConnection)
+	}
+
+	var err error
+
+	for _, v := range c.handlers {
+		err = c.r.Conn.DeclareAndBindQueue(v.Queue, v.RoutingKey)
+		if err != nil {
+			return err
+		}
+
+		go c.handle(v.Queue, v.Handler)
+	}
+
+	return nil
 }
 
-func (entity *Consumer) handle(handler *ConsumerHandler) {
-	minDelay := 100 * time.Millisecond
-	maxDelay := 30 * time.Second
-	expFactor := time.Duration(2)
-	delay := minDelay
+func (*Consumer) Keepalive() {
+	select {}
+}
+
+func (c *Consumer) Shutdown() error {
+	c.Lock()
+	defer c.Unlock()
+
+	c.shutdown = true
+
+	for _, v := range c.channels {
+		err := v.Channel.Cancel(v.tag, true)
+		if err != nil {
+			return fmt.Errorf("consumer shutdown failed: %w", err)
+		}
+	}
+
+	if err := c.r.Close(); err != nil {
+		return fmt.Errorf("consumer shutdown failed: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Consumer) handle(queue string, handler func(*Publication) error) {
+	var (
+		minDelay  = time.Second
+		maxDelay  = 30 * time.Second
+		expFactor = time.Duration(2)
+		delay     = minDelay
+	)
 
 	for {
 		// 检查消费者是否已发起停止操作
-		entity.Lock()
-		shutdown := entity.shutdown
-		entity.Unlock()
+		c.Lock()
+		shutdown := c.shutdown
+		c.Unlock()
 		if shutdown {
 			return
 		}
 
 		select {
-		case <-entity.broker.conn.closeChan:
+		case <-c.r.Conn.closeChan:
 			// 连接已关闭 退出消费
 			return
-		case <-entity.broker.conn.waitChan:
+		case <-c.r.Conn.waitChan:
 			// 重连时会在此阻塞
 		}
 
-		// 检查是否已连接
-		entity.broker.Lock()
-		if entity.broker.conn.connected == false {
-			entity.broker.Unlock()
+		c.r.Lock()
+
+		if c.r.Conn.connected == false {
+			c.r.Unlock()
 			continue
 		}
 
-		channel, deliveries, err := entity.broker.conn.Consume(handler.QueueName, handler.BindKey)
-		entity.broker.Unlock()
+		channel, deliveries, err := c.r.Conn.Consume(queue)
+		c.channels = append(c.channels, channel)
+
+		c.r.Unlock()
 
 		switch err {
 		case nil:
 			delay = minDelay
-			entity.Lock()
-			entity.channel = channel
-			entity.Unlock()
 		default:
 			// 如果发生了错误会进到这个分支 等待重试
 			if delay > maxDelay {
@@ -111,32 +144,17 @@ func (entity *Consumer) handle(handler *ConsumerHandler) {
 			continue
 		}
 
-		// 开始处理事件
-		var subWg sync.WaitGroup
-
 		for delivery := range deliveries {
-			subWg.Add(1)
+			p := Publication{
+				RoutingKey: delivery.RoutingKey,
+				Body:       delivery.Body,
+			}
 
-			go func(d amqp.Delivery) {
-				p := Publication{
-					RoutingKey: d.RoutingKey,
-					Body:       d.Body,
-				}
-
-				for _, fn := range handler.FuncLists {
-					if err := fn(&p); err == nil {
-						_ = d.Ack(false)
-					} else {
-						_ = d.Nack(false, true)
-					}
-				}
-
-				subWg.Done()
-			}(delivery)
+			if err := handler(&p); err == nil {
+				_ = delivery.Ack(false)
+			} else {
+				_ = delivery.Nack(false, true)
+			}
 		}
-
-		subWg.Wait()
-
-		entity.broker.wg.Done()
 	}
 }

@@ -1,35 +1,37 @@
-package kyrabbitmq
+package rabbitmq
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"github.com/streadway/amqp"
 )
 
 type Producer struct {
-	broker *broker
+	r *rabbitmq
 }
 
-func NewProducer(config *Config) (*Producer, error) {
-	broker := newBroker(config)
+func NewProducer(opts ...Option) (*Producer, error) {
+	r := newRabbitMQ(opts...)
 
-	if err := broker.Connect(); err != nil {
-		return nil, WrapErr("New producer failed", err)
+	if err := r.Connect(); err != nil {
+		return nil, fmt.Errorf("new producer failed: %w", err)
 	}
 
-	return &Producer{
-		broker: broker,
-	}, nil
+	ret := Producer{
+		r: r,
+	}
+
+	return &ret, nil
 }
 
-func (entity *Producer) Publish(routingKey string, message *Message) error {
-	if entity.broker.conn == nil {
-		return WrapErr("Publish failed", errors.New("not connected"))
+func (p *Producer) Publish(routingKey string, message Message) error {
+	if p.r.Conn == nil {
+		return fmt.Errorf("publish failed: %w", nullConnection)
 	}
 
 	body, err := json.Marshal(message.Body)
 	if err != nil {
-		return WrapErr("Marshal message failed", err)
+		return fmt.Errorf("marshal message failed: %w", err)
 	}
 
 	msg := amqp.Publishing{
@@ -38,8 +40,9 @@ func (entity *Producer) Publish(routingKey string, message *Message) error {
 		Body:        body,
 	}
 
-	if err := entity.broker.conn.Publish(routingKey, &msg); err != nil {
-		return WrapErr("Publish failed", err)
+	err = p.r.Conn.Publish(routingKey, msg)
+	if err != nil {
+		return fmt.Errorf("publish failed: %w", err)
 	}
 
 	return nil

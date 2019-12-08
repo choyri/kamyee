@@ -23,6 +23,7 @@ type connection struct {
 type exchange struct {
 	Name string
 	Type string
+	Args amqp.Table
 }
 
 func newConnection(opts Options) *connection {

@@ -2,8 +2,10 @@ package rabbitmq
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/streadway/amqp"
+	"time"
 )
 
 type Producer struct {
@@ -46,4 +48,19 @@ func (p *Producer) Publish(routingKey string, message Message) error {
 	}
 
 	return nil
+}
+
+func (p *Producer) PublishBody(routingKey string, body interface{}, delayTime ...time.Duration) error {
+	msg := Message{Body: body}
+
+	if len(delayTime) > 0 {
+		if p.r.Conn.exchange.Type != delayedExchangeType {
+			return errors.New("cannot publish delayed message on a non-delay exchange")
+		}
+		msg.Header = amqp.Table{
+			delayHeader: int(delayTime[0] / time.Millisecond),
+		}
+	}
+
+	return p.Publish(routingKey, msg)
 }

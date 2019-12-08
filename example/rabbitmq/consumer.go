@@ -10,7 +10,8 @@ import (
 )
 
 func main() {
-	c, err := rabbitmq.NewConsumer()
+	//c, err := rabbitmq.NewConsumer()
+	c, err := rabbitmq.NewConsumer(rabbitmq.DelayedExchange("test_delayed"))
 	example.HandleErr(err)
 
 	err = c.RegisterHandler([]rabbitmq.ConsumerHandler{
@@ -38,6 +39,21 @@ func main() {
 			Handler: func(p *rabbitmq.Publication) error {
 				rand.Seed(time.Now().UnixNano())
 				if rand.Intn(4) >= 3 {
+					fmt.Print("current # queue: test3, routingKey: custom.*\n")
+					fmt.Printf("receive data # routingKey: %s, get: %s\n\n", p.RoutingKey, string(p.Body))
+					return nil
+				}
+				fmt.Printf("try requeue\n")
+				return errors.New("err")
+			},
+		},
+		{
+			Queue:      "test4",
+			RoutingKey: "delayed.*",
+			Handler: func(p *rabbitmq.Publication) error {
+				rand.Seed(time.Now().UnixNano())
+				if rand.Intn(4) >= 3 {
+					fmt.Printf("delayed message received: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 					fmt.Print("current # queue: test3, routingKey: custom.*\n")
 					fmt.Printf("receive data # routingKey: %s, get: %s\n\n", p.RoutingKey, string(p.Body))
 					return nil

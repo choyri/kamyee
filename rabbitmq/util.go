@@ -12,6 +12,9 @@ var (
 		Type: amqp.ExchangeTopic,
 	}
 
+	delayHeader         = "x-delay"
+	delayedExchangeType = "x-delayed-message"
+
 	nullChannel    = errors.New("channel is null")
 	nullConnection = errors.New("connection is null")
 )

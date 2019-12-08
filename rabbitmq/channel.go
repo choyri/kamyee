@@ -67,7 +67,7 @@ func (ch *channel) DeclareExchange(exchange exchange) error {
 		false,         // autoDelete
 		false,         // internal
 		false,         // noWait
-		nil,           // args
+		exchange.Args, // args
 	)
 }
 

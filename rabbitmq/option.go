@@ -1,6 +1,7 @@
 package rabbitmq
 
 import (
+	"github.com/streadway/amqp"
 	"regexp"
 )
 
@@ -43,5 +44,23 @@ func ExchangeType(v string) Option {
 func PrefetchCount(v uint16) Option {
 	return func(o *Options) {
 		o.PrefetchCount = v
+	}
+}
+
+func DelayedExchange(name string, xDelayedType ...string) Option {
+	kind := "topic"
+
+	if len(xDelayedType) > 0 {
+		kind = xDelayedType[0]
+	}
+
+	return func(o *Options) {
+		o.Exchange = exchange{
+			Name: name,
+			Type: delayedExchangeType,
+			Args: amqp.Table{
+				"x-delayed-type": kind,
+			},
+		}
 	}
 }

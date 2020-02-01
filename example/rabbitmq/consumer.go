@@ -68,5 +68,16 @@ func main() {
 	err = c.Startup()
 	example.HandleErr(err)
 
-	c.Keepalive()
+	rand.Seed(time.Now().UnixNano())
+	if rand.Intn(4) >= 3 {
+		fmt.Print("keep living...\n")
+		c.Keepalive()
+		return
+	}
+
+	fmt.Print("sleep 10s ...\n")
+	time.Sleep(10 * time.Second)
+
+	err = c.Shutdown()
+	example.HandleErr(err)
 }

@@ -34,10 +34,10 @@ func ExchangeName(v string) Option {
 
 func ExchangeType(v string) Option {
 	return func(o *Options) {
-		if len(o.Exchange.Type) == 0 {
+		if len(o.Exchange.Kind) == 0 {
 			o.Exchange = DefaultExchange
 		}
-		o.Exchange.Type = v
+		o.Exchange.Kind = v
 	}
 }
 
@@ -48,7 +48,7 @@ func PrefetchCount(v uint16) Option {
 }
 
 func DelayedExchange(name string, xDelayedType ...string) Option {
-	kind := "topic"
+	kind := amqp.ExchangeTopic
 
 	if len(xDelayedType) > 0 {
 		kind = xDelayedType[0]
@@ -57,9 +57,9 @@ func DelayedExchange(name string, xDelayedType ...string) Option {
 	return func(o *Options) {
 		o.Exchange = exchange{
 			Name: name,
-			Type: delayedExchangeType,
+			Kind: delayedExchangeType,
 			Args: amqp.Table{
-				"x-delayed-type": kind,
+				delayedExchangeArgsKey: kind,
 			},
 		}
 	}

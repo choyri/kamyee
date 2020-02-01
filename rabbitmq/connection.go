@@ -22,7 +22,7 @@ type connection struct {
 
 type exchange struct {
 	Name string
-	Type string
+	Kind string
 	Args amqp.Table
 }
 
@@ -148,10 +148,10 @@ func (conn *connection) tryConnect() error {
 }
 
 func (conn *connection) keepConnect() {
-	connected := false
+	shouldTryConnect := false
 
 	for {
-		if connected {
+		if shouldTryConnect {
 			if err := conn.tryConnect(); err != nil {
 				time.Sleep(time.Second)
 				continue
@@ -164,7 +164,7 @@ func (conn *connection) keepConnect() {
 			close(conn.waitChan)
 		}
 
-		connected = true
+		shouldTryConnect = true
 
 		notifyClose := make(chan *amqp.Error)
 		conn.Connection.NotifyClose(notifyClose)

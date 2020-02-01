@@ -62,7 +62,7 @@ func (ch *channel) Consume(queue string) (<-chan amqp.Delivery, error) {
 func (ch *channel) DeclareExchange(exchange exchange) error {
 	return ch.Channel.ExchangeDeclare(
 		exchange.Name, // name
-		exchange.Type, // kind
+		exchange.Kind, // kind
 		true,          // durable
 		false,         // autoDelete
 		false,         // internal

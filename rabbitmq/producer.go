@@ -54,7 +54,7 @@ func (p *Producer) PublishBody(routingKey string, body interface{}, delayTime ..
 	msg := Message{Body: body}
 
 	if len(delayTime) > 0 {
-		if p.r.Conn.exchange.Type != delayedExchangeType {
+		if p.r.Conn.exchange.Kind != delayedExchangeType {
 			return errors.New("cannot publish delayed message on a non-delay exchange")
 		}
 		msg.Header = amqp.Table{
